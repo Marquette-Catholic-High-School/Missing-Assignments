@@ -1,0 +1,222 @@
+'use strict';
+
+const path = require('path');
+const fs = require('fs');
+const express = require('express');
+const multer = require('multer');
+const { parse } = require('csv-parse/sync');
+const { PDFDocument, StandardFonts, degrees, rgb } = require('pdf-lib');
+
+const PORT = process.env.PORT || 3000;
+const TEMPLATE_PATH = process.env.TEMPLATE_PATH || path.join(__dirname, 'PDF Slip template.pdf');
+
+// Where each value is written on the slip, in PDF points measured on the
+// upright page (origin bottom-left, 612 x 396 for this template).
+// x = start of the blank underline, y = baseline just above the underline,
+// maxWidth = length of the underline (text is shrunk to fit, then truncated).
+const FIELDS = {
+  name:       { x: 106, y: 203.5, maxWidth: 174 },
+  teacher:    { x: 158, y: 181,   maxWidth: 122 },
+  assignment: { x: 215, y: 157.5, maxWidth: 305 },
+};
+const FONT_SIZE = 12;
+const MIN_FONT_SIZE = 7;
+
+// Accepted CSV header spellings for each field (compared lower-cased, trimmed,
+// with punctuation/underscores removed).
+const HEADER_ALIASES = {
+  name:       ['name', 'student', 'studentname', 'student name'],
+  teacher:    ['teacher', 'teachername', 'teacher name', 'nameofteacher', 'name of teacher'],
+  assignment: ['assignment', 'assignmentname', 'assignment name', 'missingassignment',
+               'missing assignment', 'nameofmissingassignment', 'name of missing assignment'],
+};
+
+// ---------------------------------------------------------------------------
+// Template handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the template and flatten any /Rotate so the page is stored upright.
+ * The scanned template is stored upside down with /Rotate 180; drawing onto
+ * a normalized copy means the field coordinates above are plain upright
+ * coordinates regardless of how the original was scanned.
+ */
+async function loadNormalizedTemplate() {
+  const bytes = fs.readFileSync(TEMPLATE_PATH);
+  const src = await PDFDocument.load(bytes);
+  const [srcPage] = src.getPages();
+  const rotation = ((srcPage.getRotation().angle % 360) + 360) % 360;
+
+  if (rotation === 0) return bytes;
+
+  const { width, height } = srcPage.getSize();
+  const out = await PDFDocument.create();
+  const embedded = await out.embedPage(srcPage);
+
+  let pageW = width, pageH = height, x = 0, y = 0;
+  if (rotation === 180) { x = width; y = height; }
+  else if (rotation === 90) { pageW = height; pageH = width; x = height; y = 0; }
+  else if (rotation === 270) { pageW = height; pageH = width; x = 0; y = width; }
+  else throw new Error(`Unsupported page rotation: ${rotation}`);
+
+  const page = out.addPage([pageW, pageH]);
+  // Rotating by the page's own /Rotate value, in the same direction that
+  // PDF viewers apply it (clockwise), makes the drawn content appear upright.
+  page.drawPage(embedded, { x, y, rotate: degrees(-rotation) });
+  return await out.save();
+}
+
+let templateBytesPromise = loadNormalizedTemplate();
+
+// ---------------------------------------------------------------------------
+// CSV handling
+// ---------------------------------------------------------------------------
+
+function normalizeHeader(h) {
+  return String(h || '')
+    .replace(/^﻿/, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mapHeaders(headers) {
+  const map = {};
+  for (const field of Object.keys(HEADER_ALIASES)) {
+    const idx = headers.findIndex((h) => {
+      const n = normalizeHeader(h);
+      return HEADER_ALIASES[field].some((a) => a.replace(/\s+/g, '') === n.replace(/\s+/g, ''));
+    });
+    if (idx === -1) return { error: `CSV is missing a "${field}" column. Found columns: ${headers.join(', ') || '(none)'}` };
+    map[field] = headers[idx];
+  }
+  return { map };
+}
+
+function parseCsv(buffer) {
+  let records;
+  try {
+    records = parse(buffer, {
+      bom: true,
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+      relax_column_count: true,
+    });
+  } catch (err) {
+    return { error: `Could not read the CSV: ${err.message}` };
+  }
+  if (records.length === 0) return { error: 'The CSV has no data rows.' };
+
+  const headers = Object.keys(records[0]);
+  const { map, error } = mapHeaders(headers);
+  if (error) return { error };
+
+  const rows = [];
+  const skipped = [];
+  records.forEach((r, i) => {
+    const row = {
+      name: String(r[map.name] ?? '').trim(),
+      teacher: String(r[map.teacher] ?? '').trim(),
+      assignment: String(r[map.assignment] ?? '').trim(),
+    };
+    if (!row.name && !row.teacher && !row.assignment) return; // blank line
+    if (!row.name) { skipped.push(i + 2); return; }           // +2: header + 1-based
+    rows.push(row);
+  });
+  if (rows.length === 0) return { error: 'No usable rows: every row is missing a name.' };
+  return { rows, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// PDF generation
+// ---------------------------------------------------------------------------
+
+function fitText(font, text, maxWidth, size) {
+  let s = size;
+  while (s > MIN_FONT_SIZE && font.widthOfTextAtSize(text, s) > maxWidth) s -= 0.5;
+  if (font.widthOfTextAtSize(text, s) <= maxWidth) return { text, size: s };
+  // Still too long at the minimum size: truncate with an ellipsis.
+  let t = text;
+  while (t.length > 1 && font.widthOfTextAtSize(t + '…', s) > maxWidth) t = t.slice(0, -1);
+  return { text: t + '…', size: s };
+}
+
+// WinAnsi-encodable characters only (standard Helvetica can't draw others).
+function sanitize(text) {
+  return text.replace(/[^\x20-\x7E\xA0-\xFF‘’“”–—…]/g, '?');
+}
+
+async function buildPdf(rows) {
+  const templateBytes = await templateBytesPromise;
+  const template = await PDFDocument.load(templateBytes);
+  const out = await PDFDocument.create();
+  out.setTitle('Missing Assignment Slips');
+  const font = await out.embedFont(StandardFonts.Helvetica);
+
+  for (const row of rows) {
+    const [page] = await out.copyPages(template, [0]);
+    out.addPage(page);
+    for (const [field, spec] of Object.entries(FIELDS)) {
+      const value = sanitize(row[field] || '');
+      if (!value) continue;
+      const { text, size } = fitText(font, value, spec.maxWidth, FONT_SIZE);
+      page.drawText(text, { x: spec.x, y: spec.y, size, font, color: rgb(0, 0, 0) });
+    }
+  }
+  return await out.save();
+}
+
+// ---------------------------------------------------------------------------
+// Web server
+// ---------------------------------------------------------------------------
+
+const app = express();
+app.use(express.static(path.join(__dirname, 'public')));
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
+
+app.get('/sample.csv', (req, res) => {
+  res.type('text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="sample.csv"');
+  res.send(fs.readFileSync(path.join(__dirname, 'sample.csv')));
+});
+
+app.post('/generate', (req, res) => {
+  upload.single('csv')(req, res, async (err) => {
+    try {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Please choose a CSV file.' });
+
+      const { rows, skipped, error } = parseCsv(req.file.buffer);
+      if (error) return res.status(400).json({ error });
+
+      const pdf = await buildPdf(rows);
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="missing-assignment-slips-${stamp}.pdf"`);
+      res.setHeader('X-Slip-Count', String(rows.length));
+      res.setHeader('X-Skipped-Rows', skipped.join(','));
+      res.send(Buffer.from(pdf));
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Something went wrong while building the PDF.' });
+    }
+  });
+});
+
+templateBytesPromise
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Missing Assignment Slips running at http://localhost:${PORT}`);
+      console.log(`Template: ${TEMPLATE_PATH}`);
+    });
+  })
+  .catch((e) => {
+    console.error(`Could not load template at ${TEMPLATE_PATH}:`, e.message);
+    process.exit(1);
+  });

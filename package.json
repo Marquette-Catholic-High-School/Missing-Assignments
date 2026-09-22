@@ -1,0 +1,17 @@
+{
+  "name": "missing-assignment-slips",
+  "version": "1.0.0",
+  "description": "Upload a CSV (name, teacher, assignment) and get a printable PDF of filled-in missing assignment slips.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "pdf-lib": "^1.17.1"
+  }
+}
