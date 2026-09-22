@@ -22,6 +22,21 @@ const FIELDS = {
 const FONT_SIZE = 12;
 const MIN_FONT_SIZE = 7;
 
+// The bottom sentence on the scanned slip names the person slips go to.
+// It is covered with a white box and redrawn so that name can change.
+const SUBMIT_TO_DEFAULT = (process.env.SUBMIT_TO || 'Mrs. Maag').trim();
+const FOOTNOTE_TEXT = '**If this assignment has not been cleared on FACTS and/or this form has not been '
+  + 'submitted to {name} by Thursday, you will receive a detention on Friday of this week.';
+const FOOTNOTE = {
+  cover: { x: 66, y: 39, width: 466, height: 33 }, // white box over the scanned sentence
+  x: 69.5,          // left edge of the redrawn text
+  firstBaseline: 60.5,
+  lineHeight: 15,
+  maxWidth: 450,
+  fontSize: 11.5,
+  maxLines: 2,
+};
+
 // Accepted CSV header spellings for each field (compared lower-cased, trimmed,
 // with punctuation/underscores removed).
 const HEADER_ALIASES = {
@@ -148,7 +163,41 @@ function sanitize(text) {
   return text.replace(/[^\x20-\x7E\xA0-\xFF‘’“”–—…]/g, '?');
 }
 
-async function buildPdf(rows) {
+// Greedy word wrap; returns an array of lines.
+function wrapText(font, text, maxWidth, size) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth || !line) line = candidate;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawFootnote(page, font, submitTo) {
+  const { cover } = FOOTNOTE;
+  page.drawRectangle({ x: cover.x, y: cover.y, width: cover.width, height: cover.height, color: rgb(1, 1, 1) });
+
+  const text = FOOTNOTE_TEXT.replace('{name}', sanitize(submitTo));
+  let size = FOOTNOTE.fontSize;
+  let lines = wrapText(font, text, FOOTNOTE.maxWidth, size);
+  while (lines.length > FOOTNOTE.maxLines && size > MIN_FONT_SIZE) {
+    size -= 0.5;
+    lines = wrapText(font, text, FOOTNOTE.maxWidth, size);
+  }
+  const lineHeight = FOOTNOTE.lineHeight * (size / FOOTNOTE.fontSize);
+  lines.forEach((line, i) => {
+    page.drawText(line, {
+      x: FOOTNOTE.x,
+      y: FOOTNOTE.firstBaseline - i * lineHeight,
+      size, font, color: rgb(0, 0, 0),
+    });
+  });
+}
+
+async function buildPdf(rows, submitTo) {
   const templateBytes = await templateBytesPromise;
   const template = await PDFDocument.load(templateBytes);
   const out = await PDFDocument.create();
@@ -164,6 +213,7 @@ async function buildPdf(rows) {
       const { text, size } = fitText(font, value, spec.maxWidth, FONT_SIZE);
       page.drawText(text, { x: spec.x, y: spec.y, size, font, color: rgb(0, 0, 0) });
     }
+    drawFootnote(page, font, submitTo);
   }
   return await out.save();
 }
@@ -186,6 +236,10 @@ app.get('/sample.csv', (req, res) => {
   res.send(fs.readFileSync(path.join(__dirname, 'sample.csv')));
 });
 
+app.get('/config', (req, res) => {
+  res.json({ submitTo: SUBMIT_TO_DEFAULT });
+});
+
 app.post('/generate', (req, res) => {
   upload.single('csv')(req, res, async (err) => {
     try {
@@ -195,7 +249,8 @@ app.post('/generate', (req, res) => {
       const { rows, skipped, error } = parseCsv(req.file.buffer);
       if (error) return res.status(400).json({ error });
 
-      const pdf = await buildPdf(rows);
+      const submitTo = String((req.body && req.body.submitTo) || '').trim().slice(0, 60) || SUBMIT_TO_DEFAULT;
+      const pdf = await buildPdf(rows, submitTo);
       const stamp = new Date().toISOString().slice(0, 10);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="missing-assignment-slips-${stamp}.pdf"`);

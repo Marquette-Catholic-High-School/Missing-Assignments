@@ -32,6 +32,15 @@ Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 
 `sample.csv` in this folder is a working example.
 
+## The "submitted to" name
+
+The bottom of the slip says who the form must be handed in to. That name
+is typed on the upload page (it defaults to "Mrs. Maag" and remembers the
+last value you used in your browser). To change the default for everyone,
+set the `SUBMIT_TO` environment variable, for example
+`SUBMIT_TO="Mr. Jones" npm start`. The rest of the sentence lives in
+`server.js` as `FOOTNOTE_TEXT` if the wording ever needs to change.
+
 ## Adjusting where text lands
 
 The positions are in `server.js` under `FIELDS`, in PDF points measured on the
@@ -45,6 +54,7 @@ To use a different template, replace `PDF Slip template.pdf` or set the
 
 - `PORT` – port to listen on (default 3000).
 - `TEMPLATE_PATH` – path to the slip PDF (default: the template in this folder).
+- `SUBMIT_TO` – default name in the bottom sentence (default: Mrs. Maag).
 
 ## Deploy to an Ubuntu server
 

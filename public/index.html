@@ -16,6 +16,10 @@
   .drop.over { border-color: var(--accent); background:#eef4fd; }
   .drop strong { display:block; margin-bottom:4px; }
   .drop input { display:none; }
+  .field { margin-top:18px; }
+  .field label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
+  .field input { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
+  .field small { display:block; margin-top:6px; font-size:12px; color:var(--muted); }
   .file { margin-top:12px; font-size:14px; color:var(--ink); min-height:1.4em; }
   button { margin-top:16px; width:100%; padding:12px; font-size:16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
   button:disabled { background:#9db4d9; cursor:not-allowed; }
@@ -38,6 +42,11 @@
         <input type="file" id="csv" name="csv" accept=".csv,text/csv">
       </label>
       <div class="file" id="fileName"></div>
+      <div class="field">
+        <label for="submitTo">Slips must be submitted to</label>
+        <input type="text" id="submitTo" name="submitTo" maxlength="60" autocomplete="off" placeholder="Mrs. Maag">
+        <small>This name is printed in the sentence at the bottom of every slip.</small>
+      </div>
       <button type="submit" id="go" disabled>Create PDF slips</button>
     </form>
     <div class="status" id="status"></div>
@@ -52,6 +61,16 @@
   const go = document.getElementById('go');
   const status = document.getElementById('status');
   const form = document.getElementById('form');
+  const submitTo = document.getElementById('submitTo');
+
+  // Prefill the name: last value used in this browser, else the server default.
+  (async () => {
+    let saved = null;
+    try { saved = localStorage.getItem('submitTo'); } catch {}
+    if (saved) { submitTo.value = saved; return; }
+    try { const cfg = await (await fetch('/config')).json(); submitTo.value = cfg.submitTo || ''; } catch {}
+  })();
+  submitTo.addEventListener('input', () => { try { localStorage.setItem('submitTo', submitTo.value); } catch {} });
 
   function setFile(file) {
     if (!file) return;
@@ -75,6 +94,7 @@
     try {
       const fd = new FormData();
       fd.append('csv', input.files[0]);
+      fd.append('submitTo', submitTo.value.trim());
       const res = await fetch('/generate', { method: 'POST', body: fd });
       if (!res.ok) {
         let msg = 'Upload failed.';
