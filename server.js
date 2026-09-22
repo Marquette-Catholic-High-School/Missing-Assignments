@@ -2,13 +2,37 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
+const cookieSession = require('cookie-session');
 const { parse } = require('csv-parse/sync');
 const { PDFDocument, StandardFonts, degrees, rgb } = require('pdf-lib');
 
+// Load settings from a .env file next to this script, if there is one.
+try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* no .env, use the environment */ }
+
 const PORT = process.env.PORT || 3000;
 const TEMPLATE_PATH = process.env.TEMPLATE_PATH || path.join(__dirname, 'PDF Slip template.pdf');
+const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+
+// Google sign-in. When GOOGLE_CLIENT_ID is set, everyone must sign in and
+// sheets are read with the signed-in user's own Google access. When it is
+// not set, the app is open and only publicly shared sheets can be read.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || '').trim().toLowerCase().replace(/^@/, '');
+const AUTH_ENABLED = Boolean(GOOGLE_CLIENT_ID);
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_HOURS = Number(process.env.SESSION_HOURS || 12);
+
+// Google endpoints (overridable so tests can point at a stand-in server).
+const OAUTH_AUTH_URL = process.env.OAUTH_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth';
+const OAUTH_TOKEN_URL = process.env.OAUTH_TOKEN_URL || 'https://oauth2.googleapis.com/token';
+const OAUTH_USERINFO_URL = process.env.OAUTH_USERINFO_URL || 'https://www.googleapis.com/oauth2/v3/userinfo';
+const SHEETS_API_URL = process.env.SHEETS_API_URL || 'https://sheets.googleapis.com';
+const SHEETS_BASE_URL = process.env.SHEETS_BASE_URL || 'https://docs.google.com';
+const OAUTH_SCOPES = ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/spreadsheets.readonly'];
 
 // Where each value is written on the slip, in PDF points measured on the
 // upright page (origin bottom-left, 612 x 396 for this template).
@@ -37,15 +61,6 @@ const FOOTNOTE = {
   maxLines: 2,
 };
 
-// Accepted CSV header spellings for each field (compared lower-cased, trimmed,
-// with punctuation/underscores removed).
-const HEADER_ALIASES = {
-  name:       ['name', 'student', 'studentname', 'student name'],
-  teacher:    ['teacher', 'teachername', 'teacher name', 'nameofteacher', 'name of teacher'],
-  assignment: ['assignment', 'assignmentname', 'assignment name', 'missingassignment',
-               'missing assignment', 'nameofmissingassignment', 'name of missing assignment'],
-};
-
 // Page layouts. The slip is a landscape half-sheet (612 x 396 pt). Several
 // slips can be stacked on one portrait letter page (612 x 792 pt) to be cut
 // apart after printing. With three per page the empty band above "Name:" is
@@ -57,6 +72,15 @@ const LAYOUTS = {
   3: { perPage: 3, cropHeight: 246 },
 };
 const DEFAULT_LAYOUT = 3;
+
+// Accepted spreadsheet header spellings for each field (compared lower-cased,
+// trimmed, with punctuation/underscores removed).
+const HEADER_ALIASES = {
+  name:       ['name', 'student', 'studentname', 'student name'],
+  teacher:    ['teacher', 'teachername', 'teacher name', 'nameofteacher', 'name of teacher'],
+  assignment: ['assignment', 'assignmentname', 'assignment name', 'missingassignment',
+               'missing assignment', 'nameofmissingassignment', 'name of missing assignment'],
+};
 
 // ---------------------------------------------------------------------------
 // Template handling
@@ -87,16 +111,14 @@ async function loadNormalizedTemplate() {
   else throw new Error(`Unsupported page rotation: ${rotation}`);
 
   const page = out.addPage([pageW, pageH]);
-  // Rotating by the page's own /Rotate value, in the same direction that
-  // PDF viewers apply it (clockwise), makes the drawn content appear upright.
   page.drawPage(embedded, { x, y, rotate: degrees(-rotation) });
   return await out.save();
 }
 
-let templateBytesPromise = loadNormalizedTemplate();
+const templateBytesPromise = loadNormalizedTemplate();
 
 // ---------------------------------------------------------------------------
-// CSV handling
+// Spreadsheet rows -> slip data
 // ---------------------------------------------------------------------------
 
 function normalizeHeader(h) {
@@ -115,26 +137,15 @@ function mapHeaders(headers) {
       const n = normalizeHeader(h);
       return HEADER_ALIASES[field].some((a) => a.replace(/\s+/g, '') === n.replace(/\s+/g, ''));
     });
-    if (idx === -1) return { error: `CSV is missing a "${field}" column. Found columns: ${headers.join(', ') || '(none)'}` };
+    if (idx === -1) return { error: `The spreadsheet is missing a "${field}" column. Found columns: ${headers.join(', ') || '(none)'}` };
     map[field] = headers[idx];
   }
   return { map };
 }
 
-function parseCsv(buffer) {
-  let records;
-  try {
-    records = parse(buffer, {
-      bom: true,
-      columns: true,
-      skip_empty_lines: true,
-      trim: true,
-      relax_column_count: true,
-    });
-  } catch (err) {
-    return { error: `Could not read the CSV: ${err.message}` };
-  }
-  if (records.length === 0) return { error: 'The CSV has no data rows.' };
+/** records: array of objects keyed by header text. */
+function rowsFromRecords(records) {
+  if (records.length === 0) return { error: 'The spreadsheet has no data rows.' };
 
   const headers = Object.keys(records[0]);
   const { map, error } = mapHeaders(headers);
@@ -156,38 +167,70 @@ function parseCsv(buffer) {
   return { rows, skipped };
 }
 
+function parseCsv(buffer) {
+  let records;
+  try {
+    records = parse(buffer, {
+      bom: true,
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+      relax_column_count: true,
+    });
+  } catch (err) {
+    return { error: `Could not read the CSV: ${err.message}` };
+  }
+  return rowsFromRecords(records);
+}
+
+/** values: array of arrays from the Sheets API (first row = headers). */
+function parseSheetValues(values) {
+  if (!Array.isArray(values) || values.length === 0) return { error: 'The sheet is empty.' };
+  const headers = values[0].map((h) => String(h ?? '').trim());
+  const records = values.slice(1).map((cells) => {
+    const rec = {};
+    headers.forEach((h, i) => { if (h) rec[h] = cells[i] ?? ''; });
+    return rec;
+  });
+  // Keep header order even when the first data row is sparse.
+  if (records.length === 0) return { error: 'The sheet has no data rows.' };
+  const first = {};
+  headers.forEach((h) => { if (h) first[h] = records[0][h] ?? ''; });
+  records[0] = first;
+  return rowsFromRecords(records);
+}
+
 // ---------------------------------------------------------------------------
 // Google Sheets
 // ---------------------------------------------------------------------------
 
-const SHEETS_BASE_URL = process.env.SHEETS_BASE_URL || 'https://docs.google.com';
 const SHEET_FETCH_TIMEOUT_MS = 20000;
 const SHEET_MAX_BYTES = 5 * 1024 * 1024;
 
-/**
- * Turn a Google Sheets link into a CSV export URL. Supports normal links
- * (/spreadsheets/d/<id>/edit#gid=<gid>) and "publish to the web" links
- * (/spreadsheets/d/e/<id>/pubhtml). Returns null if the link isn't a sheet.
- */
-function sheetCsvUrl(link) {
+/** Pull the spreadsheet id, tab gid, and link type out of a Google Sheets link. */
+function parseSheetLink(link) {
   let url;
   try { url = new URL(String(link).trim()); } catch { return null; }
   if (!/(^|\.)docs\.google\.com$/.test(url.hostname)) return null;
 
-  const gid = url.searchParams.get('gid') || (url.hash.match(/gid=(\d+)/) || [])[1] || '0';
+  const gid = url.searchParams.get('gid') || (url.hash.match(/gid=(\d+)/) || [])[1] || null;
   const published = url.pathname.match(/^\/spreadsheets\/d\/e\/([\w-]+)/);
-  if (published) return `${SHEETS_BASE_URL}/spreadsheets/d/e/${published[1]}/pub?output=csv&gid=${gid}`;
+  if (published) return { id: published[1], gid, published: true };
   const normal = url.pathname.match(/^\/spreadsheets\/d\/([\w-]+)/);
-  if (normal) return `${SHEETS_BASE_URL}/spreadsheets/d/${normal[1]}/export?format=csv&gid=${gid}`;
+  if (normal) return { id: normal[1], gid, published: false };
   return null;
 }
 
+const NOT_A_SHEET = 'That does not look like a Google Sheets link. Copy the address from your browser while the sheet is open.';
 const SHARE_HELP = 'Google would not let us read this sheet. In Google Sheets click Share, set '
   + '"General access" to "Anyone with the link" (Viewer), then try again.';
 
-async function fetchSheetCsv(link) {
-  const csvUrl = sheetCsvUrl(link);
-  if (!csvUrl) return { error: 'That does not look like a Google Sheets link. Copy the address from your browser while the sheet is open.' };
+/** Public export (no sign-in): the sheet must be shared with anyone with the link. */
+async function fetchSheetPublic(ref) {
+  const gid = ref.gid || '0';
+  const csvUrl = ref.published
+    ? `${SHEETS_BASE_URL}/spreadsheets/d/e/${ref.id}/pub?output=csv&gid=${gid}`
+    : `${SHEETS_BASE_URL}/spreadsheets/d/${ref.id}/export?format=csv&gid=${gid}`;
 
   let res;
   try {
@@ -195,18 +238,122 @@ async function fetchSheetCsv(link) {
   } catch (err) {
     return { error: `Could not reach Google Sheets (${err.name === 'TimeoutError' ? 'timed out' : err.message}).` };
   }
-
-  // A sheet that isn't shared redirects to a Google sign-in page (HTML, 200)
-  // or answers 401/403; a wrong id answers 404.
   const type = (res.headers.get('content-type') || '').toLowerCase();
   if (res.status === 404) return { error: 'Google Sheets reports that this sheet does not exist. Check the link.' };
   if (!res.ok || !type.includes('text/csv')) return { error: SHARE_HELP };
-
-  const length = Number(res.headers.get('content-length') || 0);
-  if (length > SHEET_MAX_BYTES) return { error: 'This sheet is too large (over 5 MB).' };
   const buffer = Buffer.from(await res.arrayBuffer());
   if (buffer.length > SHEET_MAX_BYTES) return { error: 'This sheet is too large (over 5 MB).' };
-  return { buffer };
+  return parseCsv(buffer);
+}
+
+/** Sheets API with the signed-in user's access token: works for any sheet they can open. */
+async function fetchSheetAsUser(ref, accessToken, email) {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const get = async (url) => {
+    let res;
+    try {
+      res = await fetch(url, { headers, signal: AbortSignal.timeout(SHEET_FETCH_TIMEOUT_MS) });
+    } catch (err) {
+      return { error: `Could not reach Google Sheets (${err.name === 'TimeoutError' ? 'timed out' : err.message}).` };
+    }
+    if (res.status === 401) return { error: 'Your Google sign-in has expired. Please sign in again.', status: 401, tokenRejected: true };
+    if (res.status === 403) return { error: `${email} does not have access to this sheet. Ask the owner to share it with you, or open it in Google Sheets to confirm you can see it.` };
+    if (res.status === 404) return { error: 'Google Sheets reports that this sheet does not exist. Check the link.' };
+    if (!res.ok) return { error: `Google Sheets returned an error (${res.status}).` };
+    return { data: await res.json() };
+  };
+
+  const base = `${SHEETS_API_URL}/v4/spreadsheets/${encodeURIComponent(ref.id)}`;
+  const meta = await get(`${base}?fields=sheets.properties(sheetId,title)`);
+  if (meta.error) return meta;
+  const sheets = (meta.data.sheets || []).map((s) => s.properties);
+  if (sheets.length === 0) return { error: 'The spreadsheet has no tabs.' };
+  const tab = (ref.gid && sheets.find((s) => String(s.sheetId) === String(ref.gid))) || sheets[0];
+
+  const range = encodeURIComponent(`'${tab.title.replace(/'/g, "''")}'`);
+  const values = await get(`${base}/values/${range}?majorDimension=ROWS`);
+  if (values.error) return values;
+  return parseSheetValues(values.data.values);
+}
+
+async function fetchSheet(link, session) {
+  const ref = parseSheetLink(link);
+  if (!ref) return { error: NOT_A_SHEET };
+  // Published ("publish to the web") ids are not spreadsheet ids; they are
+  // public by definition, so always use the public export for them.
+  if (session && session.user && !ref.published) {
+    let token = await getAccessToken(session);
+    if (token.error) return token;
+    let result = await fetchSheetAsUser(ref, token.accessToken, session.user.email);
+    if (result.tokenRejected) {
+      // Google no longer accepts the access token (revoked or expired early):
+      // get a fresh one with the refresh token and try once more.
+      token = await getAccessToken(session, true);
+      if (token.error) return token;
+      result = await fetchSheetAsUser(ref, token.accessToken, session.user.email);
+    }
+    return result;
+  }
+  return fetchSheetPublic(ref);
+}
+
+// ---------------------------------------------------------------------------
+// Google sign-in (OAuth 2.0 authorization code flow with PKCE)
+// ---------------------------------------------------------------------------
+
+const REDIRECT_URI = `${BASE_URL}/auth/google/callback`;
+
+function b64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function tokenRequest(params) {
+  const res = await fetch(OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET, ...params }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || `token endpoint returned ${res.status}`);
+  }
+  return data;
+}
+
+const EXPIRED = { error: 'Your Google sign-in has expired. Please sign in again.', status: 401 };
+
+/** Returns a valid access token for the session, refreshing it if needed (or if forced). */
+async function getAccessToken(session, force = false) {
+  const auth = session.auth || {};
+  if (!force && auth.accessToken && Date.now() < (auth.expiresAt || 0) - 60000) return { accessToken: auth.accessToken };
+  if (!auth.refreshToken) return { ...EXPIRED };
+  try {
+    const data = await tokenRequest({ grant_type: 'refresh_token', refresh_token: auth.refreshToken });
+    session.auth = {
+      ...auth,
+      accessToken: data.access_token,
+      expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000,
+    };
+    return { accessToken: data.access_token };
+  } catch (err) {
+    console.error('Token refresh failed:', err.message);
+    return { ...EXPIRED };
+  }
+}
+
+function emailDomain(email) {
+  return String(email || '').toLowerCase().split('@')[1] || '';
+}
+
+function signedIn(req) {
+  return Boolean(req.session && req.session.user);
+}
+
+/** For API routes: 401 JSON when sign-in is required and missing. */
+function requireAuth(req, res, next) {
+  if (!AUTH_ENABLED || signedIn(req)) return next();
+  res.status(401).json({ error: 'Please sign in to continue.', signIn: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +364,6 @@ function fitText(font, text, maxWidth, size) {
   let s = size;
   while (s > MIN_FONT_SIZE && font.widthOfTextAtSize(text, s) > maxWidth) s -= 0.5;
   if (font.widthOfTextAtSize(text, s) <= maxWidth) return { text, size: s };
-  // Still too long at the minimum size: truncate with an ellipsis.
   let t = text;
   while (t.length > 1 && font.widthOfTextAtSize(t + '…', s) > maxWidth) t = t.slice(0, -1);
   return { text: t + '…', size: s };
@@ -228,7 +374,6 @@ function sanitize(text) {
   return text.replace(/[^\x20-\x7E\xA0-\xFF‘’“”–—…]/g, '?');
 }
 
-// Greedy word wrap; returns an array of lines.
 function wrapText(font, text, maxWidth, size) {
   const lines = [];
   let line = '';
@@ -289,10 +434,7 @@ async function imposeSlips(slipsDoc, layout) {
   const { perPage, cropHeight } = layout;
   const out = await PDFDocument.create();
   out.setTitle('Missing Assignment Slips');
-  // Pages must belong to `out` before they can be embedded as form XObjects,
-  // so copy them across (copied pages are not added to the document).
-  const indices = slipsDoc.getPageIndices();
-  const slipPages = await out.copyPages(slipsDoc, indices);
+  const slipPages = await out.copyPages(slipsDoc, slipsDoc.getPageIndices());
 
   const { width: slipW, height: fullH } = slipPages[0].getSize();
   const slipH = cropHeight || fullH;
@@ -331,7 +473,113 @@ async function buildPdf(rows, submitTo, layoutKey) {
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+app.use(cookieSession({
+  name: 'slips.session',
+  keys: [SESSION_SECRET],
+  maxAge: SESSION_HOURS * 60 * 60 * 1000,
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: BASE_URL.startsWith('https://'),
+}));
+
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// The main page requires sign-in when auth is enabled.
+app.get('/', (req, res) => {
+  if (AUTH_ENABLED && !signedIn(req)) return res.redirect('/login');
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
+app.get('/login', (req, res) => {
+  if (!AUTH_ENABLED || signedIn(req)) return res.redirect('/');
+  res.sendFile(path.join(PUBLIC_DIR, 'login.html'));
+});
+
+app.use(express.static(PUBLIC_DIR, { index: false }));
+
+app.get('/auth/google', (req, res) => {
+  if (!AUTH_ENABLED) return res.redirect('/');
+  const state = b64url(crypto.randomBytes(24));
+  const verifier = b64url(crypto.randomBytes(48));
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+  req.session.oauth = { state, verifier };
+
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    scope: OAUTH_SCOPES.join(' '),
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    access_type: 'offline',
+    prompt: 'consent',
+  });
+  if (ALLOWED_DOMAIN) params.set('hd', ALLOWED_DOMAIN);
+  res.redirect(`${OAUTH_AUTH_URL}?${params}`);
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  if (!AUTH_ENABLED) return res.redirect('/');
+  const pending = (req.session && req.session.oauth) || {};
+  req.session.oauth = null;
+
+  if (req.query.error) return res.redirect('/login?error=denied');
+  if (!req.query.code || !req.query.state || req.query.state !== pending.state || !pending.verifier) {
+    return res.redirect('/login?error=state');
+  }
+
+  try {
+    const tokens = await tokenRequest({
+      grant_type: 'authorization_code',
+      code: String(req.query.code),
+      redirect_uri: REDIRECT_URI,
+      code_verifier: pending.verifier,
+    });
+
+    const infoRes = await fetch(OAUTH_USERINFO_URL, {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!infoRes.ok) throw new Error(`userinfo returned ${infoRes.status}`);
+    const info = await infoRes.json();
+    if (!info.email || info.email_verified === false) throw new Error('Google did not return a verified email');
+
+    if (ALLOWED_DOMAIN && emailDomain(info.email) !== ALLOWED_DOMAIN && String(info.hd || '').toLowerCase() !== ALLOWED_DOMAIN) {
+      req.session = null;
+      return res.redirect('/login?error=domain');
+    }
+
+    req.session.user = { email: info.email, name: info.name || info.email, picture: info.picture || '' };
+    req.session.auth = {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || null,
+      expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+    };
+    res.redirect('/');
+  } catch (err) {
+    console.error('Google sign-in failed:', err.message);
+    res.redirect('/login?error=failed');
+  }
+});
+
+app.post('/auth/logout', (req, res) => {
+  req.session = null;
+  res.redirect(AUTH_ENABLED ? '/login' : '/');
+});
+
+app.get('/config', (req, res) => {
+  res.json({
+    submitTo: SUBMIT_TO_DEFAULT,
+    layout: DEFAULT_LAYOUT,
+    authEnabled: AUTH_ENABLED,
+    allowedDomain: ALLOWED_DOMAIN || null,
+    user: signedIn(req) ? { email: req.session.user.email, name: req.session.user.name } : null,
+  });
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -344,38 +592,34 @@ app.get('/sample.csv', (req, res) => {
   res.send(fs.readFileSync(path.join(__dirname, 'sample.csv')));
 });
 
-app.get('/config', (req, res) => {
-  res.json({ submitTo: SUBMIT_TO_DEFAULT, layout: DEFAULT_LAYOUT });
-});
-
-app.post('/generate', (req, res) => {
+app.post('/generate', requireAuth, (req, res) => {
   upload.single('csv')(req, res, async (err) => {
     try {
       if (err) return res.status(400).json({ error: err.message });
 
-      let buffer;
+      let parsed;
       const sheetUrl = String((req.body && req.body.sheetUrl) || '').trim();
       if (req.file) {
-        buffer = req.file.buffer;
+        parsed = parseCsv(req.file.buffer);
       } else if (sheetUrl) {
-        const fetched = await fetchSheetCsv(sheetUrl);
-        if (fetched.error) return res.status(400).json({ error: fetched.error });
-        buffer = fetched.buffer;
+        parsed = await fetchSheet(sheetUrl, req.session);
       } else {
         return res.status(400).json({ error: 'Choose a CSV file or paste a Google Sheets link.' });
       }
-
-      const { rows, skipped, error } = parseCsv(buffer);
-      if (error) return res.status(400).json({ error });
+      if (parsed.error) {
+        // Sign-in no longer usable: end the session so the login page shows.
+        if (parsed.status === 401) req.session = null;
+        return res.status(parsed.status || 400).json({ error: parsed.error, signIn: parsed.status === 401 });
+      }
 
       const submitTo = String((req.body && req.body.submitTo) || '').trim().slice(0, 60) || SUBMIT_TO_DEFAULT;
       const layoutKey = Number((req.body && req.body.layout) || DEFAULT_LAYOUT);
-      const pdf = await buildPdf(rows, submitTo, layoutKey);
+      const pdf = await buildPdf(parsed.rows, submitTo, layoutKey);
       const stamp = new Date().toISOString().slice(0, 10);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="missing-assignment-slips-${stamp}.pdf"`);
-      res.setHeader('X-Slip-Count', String(rows.length));
-      res.setHeader('X-Skipped-Rows', skipped.join(','));
+      res.setHeader('X-Slip-Count', String(parsed.rows.length));
+      res.setHeader('X-Skipped-Rows', parsed.skipped.join(','));
       res.send(Buffer.from(pdf));
     } catch (e) {
       console.error(e);
@@ -387,8 +631,16 @@ app.post('/generate', (req, res) => {
 templateBytesPromise
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`Missing Assignment Slips running at http://localhost:${PORT}`);
+      console.log(`Missing Assignment Slips running at ${BASE_URL} (port ${PORT})`);
       console.log(`Template: ${TEMPLATE_PATH}`);
+      if (AUTH_ENABLED) {
+        console.log(`Google sign-in: ON (redirect URI ${REDIRECT_URI})`);
+        if (ALLOWED_DOMAIN) console.log(`Allowed accounts: @${ALLOWED_DOMAIN}`);
+        else console.warn('WARNING: ALLOWED_DOMAIN is not set; any Google account can sign in.');
+        if (!process.env.SESSION_SECRET) console.warn('WARNING: SESSION_SECRET is not set; everyone is signed out when the server restarts.');
+      } else {
+        console.log('Google sign-in: OFF (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable)');
+      }
     });
   })
   .catch((e) => {

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Missing Assignment Slips</title>
+<style>
+  body { margin:0; background:#fff; color:#222; font: 15px/1.5 Georgia, "Times New Roman", serif; }
+  header { background:#1b2a41; color:#fff; padding:14px 24px; border-bottom:4px solid #c9a227; }
+  header .school { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#d9dee8; }
+  header h1 { margin:2px 0 0; font-size:22px; font-weight:normal; }
+  main { max-width:760px; padding:24px; }
+  p { margin:0 0 14px; }
+  .btn { display:inline-block; font-family: Arial, Helvetica, sans-serif; font-size:15px; padding:9px 18px; background:#e9e9e9; color:#111; border:1px solid #777; text-decoration:none; }
+  .btn:hover { background:#dcdcdc; }
+  .err { border-left:4px solid #a40000; background:#fbf1f1; padding:8px 12px; margin:0 0 18px; font-family: Arial, Helvetica, sans-serif; font-size:14px; }
+  .note { color:#555; font-size:13px; margin-top:18px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="school">Marquette Catholic High School</div>
+  <h1>Missing Assignment Slips</h1>
+</header>
+<main>
+  <div class="err" id="err" hidden></div>
+  <p>Please sign in with your school Google account to use this tool.</p>
+  <p><a class="btn" href="/auth/google">Sign in with Google</a></p>
+  <p class="note" id="note">Signing in lets the tool read Google Sheets you have access to. It does not change anything in your Google account.</p>
+</main>
+<script>
+  var messages = {
+    domain: 'Please sign in with your school Google account.',
+    denied: 'Sign-in was cancelled.',
+    state: 'The sign-in link expired. Please try again.',
+    expired: 'Your Google sign-in has expired. Please sign in again.',
+    failed: 'Sign-in did not work. Please try again, or contact the office if it keeps happening.'
+  };
+  var code = new URLSearchParams(location.search).get('error');
+  if (code && messages[code]) {
+    var el = document.getElementById('err');
+    el.textContent = messages[code];
+    el.hidden = false;
+  }
+  fetch('/config').then(function (r) { return r.json(); }).then(function (cfg) {
+    if (cfg.allowedDomain) {
+      document.getElementById('note').textContent += ' Only @' + cfg.allowedDomain + ' accounts can sign in.';
+      if (code === 'domain') document.getElementById('err').textContent = 'Please sign in with your @' + cfg.allowedDomain + ' Google account.';
+    }
+  }).catch(function () {});
+</script>
+</body>
+</html>
