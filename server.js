@@ -157,6 +157,59 @@ function parseCsv(buffer) {
 }
 
 // ---------------------------------------------------------------------------
+// Google Sheets
+// ---------------------------------------------------------------------------
+
+const SHEETS_BASE_URL = process.env.SHEETS_BASE_URL || 'https://docs.google.com';
+const SHEET_FETCH_TIMEOUT_MS = 20000;
+const SHEET_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Turn a Google Sheets link into a CSV export URL. Supports normal links
+ * (/spreadsheets/d/<id>/edit#gid=<gid>) and "publish to the web" links
+ * (/spreadsheets/d/e/<id>/pubhtml). Returns null if the link isn't a sheet.
+ */
+function sheetCsvUrl(link) {
+  let url;
+  try { url = new URL(String(link).trim()); } catch { return null; }
+  if (!/(^|\.)docs\.google\.com$/.test(url.hostname)) return null;
+
+  const gid = url.searchParams.get('gid') || (url.hash.match(/gid=(\d+)/) || [])[1] || '0';
+  const published = url.pathname.match(/^\/spreadsheets\/d\/e\/([\w-]+)/);
+  if (published) return `${SHEETS_BASE_URL}/spreadsheets/d/e/${published[1]}/pub?output=csv&gid=${gid}`;
+  const normal = url.pathname.match(/^\/spreadsheets\/d\/([\w-]+)/);
+  if (normal) return `${SHEETS_BASE_URL}/spreadsheets/d/${normal[1]}/export?format=csv&gid=${gid}`;
+  return null;
+}
+
+const SHARE_HELP = 'Google would not let us read this sheet. In Google Sheets click Share, set '
+  + '"General access" to "Anyone with the link" (Viewer), then try again.';
+
+async function fetchSheetCsv(link) {
+  const csvUrl = sheetCsvUrl(link);
+  if (!csvUrl) return { error: 'That does not look like a Google Sheets link. Copy the address from your browser while the sheet is open.' };
+
+  let res;
+  try {
+    res = await fetch(csvUrl, { redirect: 'follow', signal: AbortSignal.timeout(SHEET_FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    return { error: `Could not reach Google Sheets (${err.name === 'TimeoutError' ? 'timed out' : err.message}).` };
+  }
+
+  // A sheet that isn't shared redirects to a Google sign-in page (HTML, 200)
+  // or answers 401/403; a wrong id answers 404.
+  const type = (res.headers.get('content-type') || '').toLowerCase();
+  if (res.status === 404) return { error: 'Google Sheets reports that this sheet does not exist. Check the link.' };
+  if (!res.ok || !type.includes('text/csv')) return { error: SHARE_HELP };
+
+  const length = Number(res.headers.get('content-length') || 0);
+  if (length > SHEET_MAX_BYTES) return { error: 'This sheet is too large (over 5 MB).' };
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > SHEET_MAX_BYTES) return { error: 'This sheet is too large (over 5 MB).' };
+  return { buffer };
+}
+
+// ---------------------------------------------------------------------------
 // PDF generation
 // ---------------------------------------------------------------------------
 
@@ -299,9 +352,20 @@ app.post('/generate', (req, res) => {
   upload.single('csv')(req, res, async (err) => {
     try {
       if (err) return res.status(400).json({ error: err.message });
-      if (!req.file) return res.status(400).json({ error: 'Please choose a CSV file.' });
 
-      const { rows, skipped, error } = parseCsv(req.file.buffer);
+      let buffer;
+      const sheetUrl = String((req.body && req.body.sheetUrl) || '').trim();
+      if (req.file) {
+        buffer = req.file.buffer;
+      } else if (sheetUrl) {
+        const fetched = await fetchSheetCsv(sheetUrl);
+        if (fetched.error) return res.status(400).json({ error: fetched.error });
+        buffer = fetched.buffer;
+      } else {
+        return res.status(400).json({ error: 'Choose a CSV file or paste a Google Sheets link.' });
+      }
+
+      const { rows, skipped, error } = parseCsv(buffer);
       if (error) return res.status(400).json({ error });
 
       const submitTo = String((req.body && req.body.submitTo) || '').trim().slice(0, 60) || SUBMIT_TO_DEFAULT;

@@ -32,6 +32,17 @@ Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 
 `sample.csv` in this folder is a working example.
 
+## Google Sheets
+
+Instead of a CSV you can paste a Google Sheets link. The sheet needs the
+same three columns. It must be shared with **Anyone with the link** (Viewer),
+because the server downloads it from Google without signing in. A link that
+points at a specific tab (`#gid=...`) uses that tab; otherwise the first tab
+is used. "Publish to the web" links also work.
+
+Keep in mind that a sheet shared this way is readable by anyone who has the
+link. If that is a concern for student data, download it as a CSV instead.
+
 ## Page layout
 
 Choose on the upload page how slips are arranged for printing:

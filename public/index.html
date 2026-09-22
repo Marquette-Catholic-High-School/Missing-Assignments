@@ -43,7 +43,7 @@
 </header>
 
 <main>
-  <p>Upload a spreadsheet of missing assignments saved as a CSV file. A printable PDF of slips, one per student, will download to your computer.</p>
+  <p>Upload a spreadsheet of missing assignments as a CSV file, or paste a link to a Google Sheet. A printable PDF of slips, one per student, will download to your computer.</p>
 
   <form id="form">
     <div class="row">
@@ -51,6 +51,14 @@
       <div>
         <input type="file" id="csv" name="csv" accept=".csv,text/csv">
         <div class="help">Columns needed: <code>name</code>, <code>teacher</code>, <code>assignment</code>. <a href="/sample.csv">Download a sample file</a>.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <label for="sheetUrl">or Google Sheet link</label>
+      <div>
+        <input type="text" id="sheetUrl" name="sheetUrl" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/..." style="width:100%">
+        <div class="help">Same three columns as the CSV. The sheet must be shared: <em>Share &rarr; General access &rarr; Anyone with the link</em> (Viewer). The first tab is used unless the link points to another tab.</div>
       </div>
     </div>
 
@@ -80,8 +88,8 @@
     </div>
   </form>
 
-  <h2>Preparing the CSV</h2>
-  <p>In Excel or Google Sheets, make a sheet with three columns and one row per missing assignment, then use <em>File &rarr; Save As</em> (Excel) or <em>File &rarr; Download &rarr; CSV</em> (Sheets).</p>
+  <h2>Preparing the spreadsheet</h2>
+  <p>In Excel or Google Sheets, make a sheet with three columns and one row per missing assignment. For a CSV, use <em>File &rarr; Save As</em> (Excel) or <em>File &rarr; Download &rarr; CSV</em> (Sheets). For a Google Sheet, share it with &ldquo;Anyone with the link&rdquo; and paste its address above.</p>
 <pre>name,teacher,assignment
 Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 John Public,Mrs. Johnson,Lab Report</pre>
@@ -103,14 +111,17 @@ John Public,Mrs. Johnson,Lab Report</pre>
   var status = document.getElementById('status');
   var form = document.getElementById('form');
   var submitTo = document.getElementById('submitTo');
+  var sheetUrl = document.getElementById('sheetUrl');
   var layoutInputs = document.querySelectorAll('input[name="layout"]');
 
   function setStatus(msg, cls) { status.textContent = msg; status.className = cls || ''; }
 
-  input.addEventListener('change', function () {
-    go.disabled = !input.files[0];
+  function updateButton() {
+    go.disabled = !(input.files[0] || sheetUrl.value.trim());
     setStatus('', '');
-  });
+  }
+  input.addEventListener('change', updateButton);
+  sheetUrl.addEventListener('input', updateButton);
 
   // Prefill the name: last value used in this browser, else the server default.
   (async function () {
@@ -132,12 +143,13 @@ John Public,Mrs. Johnson,Lab Report</pre>
 
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
-    if (!input.files[0]) return;
+    if (!input.files[0] && !sheetUrl.value.trim()) return;
     go.disabled = true;
-    setStatus('Building PDF...', '');
+    setStatus(input.files[0] ? 'Building PDF...' : 'Reading the Google Sheet...', '');
     try {
       var fd = new FormData();
-      fd.append('csv', input.files[0]);
+      if (input.files[0]) fd.append('csv', input.files[0]);
+      else fd.append('sheetUrl', sheetUrl.value.trim());
       fd.append('submitTo', submitTo.value.trim());
       var checked = document.querySelector('input[name="layout"]:checked');
       fd.append('layout', checked ? checked.value : '3');
