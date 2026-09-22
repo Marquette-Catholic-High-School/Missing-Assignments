@@ -71,37 +71,16 @@ fi
 echo "==> Copying app to ${APP_DIR}"
 install -d "$APP_DIR"
 rsync -a --delete \
-  --exclude node_modules --exclude .git --exclude install.sh --exclude .env \
+  --exclude node_modules --exclude .git --exclude install.sh \
   "${SRC_DIR}/" "${APP_DIR}/"
-
-# Settings file (Google sign-in etc.). Keep an existing one on the server
-# unless a new .env is supplied next to this script.
-if [[ -f "${SRC_DIR}/.env" ]]; then
-  echo "==> Installing .env from ${SRC_DIR}"
-  install -m 0600 "${SRC_DIR}/.env" "${APP_DIR}/.env"
-elif [[ ! -f "${APP_DIR}/.env" ]]; then
-  echo "    No .env found; Google sign-in is OFF. See .env.example and the README to enable it."
-fi
 
 echo "==> Installing npm dependencies"
 cd "$APP_DIR"
 npm install --omit=dev --no-audit --no-fund --loglevel=error
 chown -R "${APP_USER}:${APP_USER}" "$APP_DIR"
 chmod -R o-rwx "$APP_DIR"
-[[ -f "${APP_DIR}/.env" ]] && chmod 0600 "${APP_DIR}/.env"
 
 echo "==> Writing systemd service"
-# BASE_URL is needed for Google sign-in redirects. Prefer the value in .env;
-# otherwise derive it from DOMAIN (https) or the server's IP (http).
-BASE_URL_LINE=""
-if ! grep -qE '^BASE_URL=.+' "${APP_DIR}/.env" 2>/dev/null; then
-  if [[ -n "$DOMAIN" ]]; then
-    BASE_URL_LINE="Environment=BASE_URL=https://${DOMAIN}"
-  else
-    SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    BASE_URL_LINE="Environment=BASE_URL=http://${SERVER_IP:-localhost}"
-  fi
-fi
 cat > "/etc/systemd/system/${APP_NAME}.service" <<UNIT
 [Unit]
 Description=Missing Assignment Slips (CSV to PDF)
@@ -114,7 +93,6 @@ Group=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=NODE_ENV=production
 Environment=PORT=${APP_PORT}
-${BASE_URL_LINE}
 ExecStart=/usr/bin/node ${APP_DIR}/server.js
 Restart=always
 RestartSec=3
@@ -197,5 +175,4 @@ else
 fi
 echo "  Logs:    journalctl -u ${APP_NAME} -f"
 echo "  Restart: systemctl restart ${APP_NAME}"
-echo "  Settings: ${APP_DIR}/.env (then: systemctl restart ${APP_NAME})"
 echo "  Update:  copy new files here and re-run: sudo bash install.sh"

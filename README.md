@@ -35,48 +35,13 @@ Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 ## Google Sheets
 
 Instead of a CSV you can paste a Google Sheets link. The sheet needs the
-same three columns. A link that points at a specific tab (`#gid=...`) uses
-that tab; otherwise the first tab is used.
+same three columns. It must be shared with **Anyone with the link** (Viewer),
+because the server downloads it from Google without signing in. A link that
+points at a specific tab (`#gid=...`) uses that tab; otherwise the first tab
+is used. "Publish to the web" links also work.
 
-- **With Google sign-in on** (see below), any sheet the signed-in person can
-  open in Google Sheets works. Nothing needs to be shared publicly.
-- **With sign-in off**, the sheet must be shared with **Anyone with the
-  link** (Viewer), because the server reads it without signing in. A sheet
-  shared this way is readable by anyone with the link.
-
-## Google sign-in
-
-With sign-in on, staff must sign in with their school Google account before
-they can use the tool, and their own Google access is used to read sheets.
-Setup takes about ten minutes in Google Cloud Console:
-
-1. Go to https://console.cloud.google.com/ signed in as a school Workspace
-   admin (or any school account that is allowed to create projects) and
-   create a project, for example "Missing Assignment Slips".
-2. **APIs & Services -> Library**: search for **Google Sheets API** and
-   enable it.
-3. **APIs & Services -> OAuth consent screen**: choose **Internal** (only
-   accounts in the school's Workspace can sign in), enter the app name and
-   a support email, and save.
-4. **APIs & Services -> Credentials -> Create credentials -> OAuth client
-   ID**: application type **Web application**. Under *Authorized redirect
-   URIs* add `https://YOUR-ADDRESS/auth/google/callback` (for local testing
-   also `http://localhost:3000/auth/google/callback`). Save and copy the
-   client ID and client secret.
-5. Copy `.env.example` to `.env` next to `server.js` and fill in
-   `BASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_DOMAIN`
-   (the school email domain) and a random `SESSION_SECRET`.
-6. Restart the app.
-
-If the consent screen is set to **External** instead of Internal, Google
-shows an "unverified app" warning until the app is verified; keep
-`ALLOWED_DOMAIN` set so outside accounts are still rejected.
-
-Sign-in uses the standard Google OAuth flow. The app only asks for the
-person's email and name and read-only access to Google Sheets. Sessions
-last 12 hours (`SESSION_HOURS`) and are stored in a signed cookie.
-
-To run without sign-in, leave `GOOGLE_CLIENT_ID` blank.
+Keep in mind that a sheet shared this way is readable by anyone who has the
+link. If that is a concern for student data, download it as a CSV instead.
 
 ## Page layout
 
@@ -113,14 +78,6 @@ To use a different template, replace `PDF Slip template.pdf` or set the
 - `PORT` – port to listen on (default 3000).
 - `TEMPLATE_PATH` – path to the slip PDF (default: the template in this folder).
 - `SUBMIT_TO` – default name in the bottom sentence (default: Mrs. Maag).
-- `BASE_URL` – public address of the app, used for the Google redirect.
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` – turn on Google sign-in.
-- `ALLOWED_DOMAIN` – only accounts on this email domain may sign in.
-- `SESSION_SECRET` – random string that signs session cookies.
-- `SESSION_HOURS` – how long a sign-in lasts (default 12).
-
-All of these can go in a `.env` file next to `server.js` (see
-`.env.example`).
 
 ## Deploy to an Ubuntu server
 
@@ -144,17 +101,10 @@ the app as a systemd service, and nginx in front on port 80.
 For HTTPS, point a domain at the server first, then run
 `sudo DOMAIN=slips.example.org EMAIL=you@example.org bash install.sh`.
 
-If a `.env` file is in the folder when you run the script, it is installed
-with the app (readable only by the service user). For Google sign-in the
-`BASE_URL` in it must match the address people use, e.g.
-`https://slips.example.org`. To change settings later, edit
-`/opt/missing-assignment-slips/.env` and run
-`sudo systemctl restart missing-assignment-slips`.
-
 Useful commands on the server: `journalctl -u missing-assignment-slips -f`
 for logs, `sudo systemctl restart missing-assignment-slips` to restart.
 To update, copy the new files over and re-run the script.
 
-Note: without Google sign-in configured the app has no login, and anyone
-who can reach the server can generate slips. Set up sign-in (above) before
-exposing it to the internet.
+Note: the app has no login. Anyone who can reach the server can generate
+slips, so keep it on your school network or behind a VPN unless you add
+authentication.

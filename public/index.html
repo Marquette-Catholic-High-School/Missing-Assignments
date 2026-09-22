@@ -9,11 +9,6 @@
   header { background:#1b2a41; color:#fff; padding:14px 24px; border-bottom:4px solid #c9a227; }
   header .school { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#d9dee8; }
   header h1 { margin:2px 0 0; font-size:22px; font-weight:normal; }
-  header { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; }
-  #who { font-family: Arial, Helvetica, sans-serif; font-size:13px; color:#d9dee8; }
-  #who form { display:inline; margin-left:8px; }
-  #who button { font:inherit; color:#fff; background:none; border:1px solid #7f8ca3; padding:3px 9px; cursor:pointer; }
-  #who button:hover { background:#2a3d5c; }
   main { max-width:760px; padding:24px; }
   p { margin:0 0 14px; }
   form { border-top:1px solid #999; border-bottom:1px solid #999; margin:20px 0; }
@@ -43,11 +38,8 @@
 </head>
 <body>
 <header>
-  <div>
-    <div class="school">Marquette Catholic High School</div>
-    <h1>Missing Assignment Slips</h1>
-  </div>
-  <div id="who" hidden></div>
+  <div class="school">Marquette Catholic High School</div>
+  <h1>Missing Assignment Slips</h1>
 </header>
 
 <main>
@@ -66,7 +58,7 @@
       <label for="sheetUrl">or Google Sheet link</label>
       <div>
         <input type="text" id="sheetUrl" name="sheetUrl" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/..." style="width:100%">
-        <div class="help" id="sheetHelp">Same three columns as the CSV. The first tab is used unless the link points to another tab.</div>
+        <div class="help">Same three columns as the CSV. The sheet must be shared: <em>Share &rarr; General access &rarr; Anyone with the link</em> (Viewer). The first tab is used unless the link points to another tab.</div>
       </div>
     </div>
 
@@ -97,7 +89,7 @@
   </form>
 
   <h2>Preparing the spreadsheet</h2>
-  <p>In Excel or Google Sheets, make a sheet with three columns and one row per missing assignment. For a CSV, use <em>File &rarr; Save As</em> (Excel) or <em>File &rarr; Download &rarr; CSV</em> (Sheets). For a Google Sheet, paste its address above; <span id="sheetShareNote">any sheet you can open in Google Sheets will work</span>.</p>
+  <p>In Excel or Google Sheets, make a sheet with three columns and one row per missing assignment. For a CSV, use <em>File &rarr; Save As</em> (Excel) or <em>File &rarr; Download &rarr; CSV</em> (Sheets). For a Google Sheet, share it with &ldquo;Anyone with the link&rdquo; and paste its address above.</p>
 <pre>name,teacher,assignment
 Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 John Public,Mrs. Johnson,Lab Report</pre>
@@ -131,24 +123,12 @@ John Public,Mrs. Johnson,Lab Report</pre>
   input.addEventListener('change', updateButton);
   sheetUrl.addEventListener('input', updateButton);
 
-  // Server settings: signed-in user, default name, whether sheets need public sharing.
+  // Prefill the name: last value used in this browser, else the server default.
   (async function () {
-    var cfg = {};
-    try { cfg = await (await fetch('/config')).json(); } catch (e) {}
-    if (cfg.user) {
-      var who = document.getElementById('who');
-      who.textContent = 'Signed in as ' + (cfg.user.email || cfg.user.name);
-      var f = document.createElement('form'); f.method = 'post'; f.action = '/auth/logout';
-      var b = document.createElement('button'); b.type = 'submit'; b.textContent = 'Sign out';
-      f.appendChild(b); who.appendChild(f); who.hidden = false;
-    }
-    if (!cfg.authEnabled) {
-      document.getElementById('sheetHelp').textContent += ' The sheet must be shared: Share → General access → Anyone with the link (Viewer).';
-      document.getElementById('sheetShareNote').textContent = 'the sheet must be shared with “Anyone with the link”';
-    }
     var saved = null;
     try { saved = localStorage.getItem('submitTo'); } catch (e) {}
-    submitTo.value = saved || cfg.submitTo || '';
+    if (saved) { submitTo.value = saved; return; }
+    try { var cfg = await (await fetch('/config')).json(); submitTo.value = cfg.submitTo || ''; } catch (e) {}
   })();
   submitTo.addEventListener('input', function () { try { localStorage.setItem('submitTo', submitTo.value); } catch (e) {} });
 
@@ -176,9 +156,7 @@ John Public,Mrs. Johnson,Lab Report</pre>
       var res = await fetch('/generate', { method: 'POST', body: fd });
       if (!res.ok) {
         var msg = 'Upload failed.';
-        var body = {};
-        try { body = await res.json(); msg = body.error || msg; } catch (e2) {}
-        if (res.status === 401 && body.signIn) { location.href = '/login?error=expired'; return; }
+        try { msg = (await res.json()).error || msg; } catch (e2) {}
         throw new Error(msg);
       }
       var blob = await res.blob();
