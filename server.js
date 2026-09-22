@@ -46,6 +46,18 @@ const HEADER_ALIASES = {
                'missing assignment', 'nameofmissingassignment', 'name of missing assignment'],
 };
 
+// Page layouts. The slip is a landscape half-sheet (612 x 396 pt). Several
+// slips can be stacked on one portrait letter page (612 x 792 pt) to be cut
+// apart after printing. With three per page the empty band above "Name:" is
+// trimmed (slips are kept at full size, only the blank top is removed).
+const LETTER = { width: 612, height: 792 };
+const LAYOUTS = {
+  1: { perPage: 1, cropHeight: null },
+  2: { perPage: 2, cropHeight: null },
+  3: { perPage: 3, cropHeight: 246 },
+};
+const DEFAULT_LAYOUT = 3;
+
 // ---------------------------------------------------------------------------
 // Template handling
 // ---------------------------------------------------------------------------
@@ -197,7 +209,8 @@ function drawFootnote(page, font, submitTo) {
   });
 }
 
-async function buildPdf(rows, submitTo) {
+// One slip per page, at the template's own size.
+async function buildSlipPages(rows, submitTo) {
   const templateBytes = await templateBytesPromise;
   const template = await PDFDocument.load(templateBytes);
   const out = await PDFDocument.create();
@@ -215,7 +228,49 @@ async function buildPdf(rows, submitTo) {
     }
     drawFootnote(page, font, submitTo);
   }
-  return await out.save();
+  return out;
+}
+
+// Stack `perPage` slips on each portrait letter page with dashed cut lines.
+async function imposeSlips(slipsDoc, layout) {
+  const { perPage, cropHeight } = layout;
+  const out = await PDFDocument.create();
+  out.setTitle('Missing Assignment Slips');
+  // Pages must belong to `out` before they can be embedded as form XObjects,
+  // so copy them across (copied pages are not added to the document).
+  const indices = slipsDoc.getPageIndices();
+  const slipPages = await out.copyPages(slipsDoc, indices);
+
+  const { width: slipW, height: fullH } = slipPages[0].getSize();
+  const slipH = cropHeight || fullH;
+  const box = cropHeight ? { left: 0, bottom: 0, right: slipW, top: cropHeight } : undefined;
+  const gap = (LETTER.height - perPage * slipH) / (perPage + 1);
+  const x = (LETTER.width - slipW) / 2;
+
+  for (let i = 0; i < slipPages.length; i += perPage) {
+    const page = out.addPage([LETTER.width, LETTER.height]);
+    const group = slipPages.slice(i, i + perPage);
+    for (let j = 0; j < group.length; j++) {
+      const embedded = await out.embedPage(group[j], box);
+      const y = LETTER.height - gap - (j + 1) * slipH - j * gap;
+      page.drawPage(embedded, { x, y, width: slipW, height: slipH });
+      if (j > 0) {
+        const cutY = y + slipH + gap / 2;
+        page.drawLine({
+          start: { x: 0, y: cutY }, end: { x: LETTER.width, y: cutY },
+          thickness: 0.5, color: rgb(0.6, 0.6, 0.6), dashArray: [6, 4],
+        });
+      }
+    }
+  }
+  return out;
+}
+
+async function buildPdf(rows, submitTo, layoutKey) {
+  const layout = LAYOUTS[layoutKey] || LAYOUTS[DEFAULT_LAYOUT];
+  const slipsDoc = await buildSlipPages(rows, submitTo);
+  const doc = layout.perPage === 1 ? slipsDoc : await imposeSlips(slipsDoc, layout);
+  return await doc.save();
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +292,7 @@ app.get('/sample.csv', (req, res) => {
 });
 
 app.get('/config', (req, res) => {
-  res.json({ submitTo: SUBMIT_TO_DEFAULT });
+  res.json({ submitTo: SUBMIT_TO_DEFAULT, layout: DEFAULT_LAYOUT });
 });
 
 app.post('/generate', (req, res) => {
@@ -250,7 +305,8 @@ app.post('/generate', (req, res) => {
       if (error) return res.status(400).json({ error });
 
       const submitTo = String((req.body && req.body.submitTo) || '').trim().slice(0, 60) || SUBMIT_TO_DEFAULT;
-      const pdf = await buildPdf(rows, submitTo);
+      const layoutKey = Number((req.body && req.body.layout) || DEFAULT_LAYOUT);
+      const pdf = await buildPdf(rows, submitTo, layoutKey);
       const stamp = new Date().toISOString().slice(0, 10);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="missing-assignment-slips-${stamp}.pdf"`);

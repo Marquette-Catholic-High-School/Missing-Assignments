@@ -32,6 +32,18 @@ Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
 
 `sample.csv` in this folder is a working example.
 
+## Page layout
+
+Choose on the upload page how slips are arranged for printing:
+
+- **Three per page** (default): portrait letter paper, three full-size slips
+  stacked with dashed cut lines. The empty band above "Name:" on the
+  original slip is trimmed so three fit; nothing printed is removed.
+- **Two per page**: letter paper, two untrimmed half-sheet slips, cut once.
+- **One per page**: half-sheet pages exactly like the template.
+
+Print at 100% (not "fit to page") so the slips come out the right size.
+
 ## The "submitted to" name
 
 The bottom of the slip says who the form must be handed in to. That name

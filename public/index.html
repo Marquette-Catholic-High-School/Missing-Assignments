@@ -18,8 +18,13 @@
   .drop input { display:none; }
   .field { margin-top:18px; }
   .field label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
-  .field input { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
+  .field input[type="text"] { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
   .field small { display:block; margin-top:6px; font-size:12px; color:var(--muted); }
+  .choices { display:grid; gap:8px; }
+  .choices label { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:8px; cursor:pointer; font-size:14px; font-weight:400; }
+  .choices label:has(input:checked) { border-color: var(--accent); background:#eef4fd; }
+  .choices input { margin-top:3px; }
+  .choices span small { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
   .file { margin-top:12px; font-size:14px; color:var(--ink); min-height:1.4em; }
   button { margin-top:16px; width:100%; padding:12px; font-size:16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
   button:disabled { background:#9db4d9; cursor:not-allowed; }
@@ -47,6 +52,17 @@
         <input type="text" id="submitTo" name="submitTo" maxlength="60" autocomplete="off" placeholder="Mrs. Maag">
         <small>This name is printed in the sentence at the bottom of every slip.</small>
       </div>
+      <div class="field">
+        <label>Page layout</label>
+        <div class="choices" id="layout">
+          <label><input type="radio" name="layout" value="3" checked>
+            <span>Three slips per page<small>Letter paper, cut into thirds. Slips are full size with the blank top trimmed.</small></span></label>
+          <label><input type="radio" name="layout" value="2">
+            <span>Two slips per page<small>Letter paper, cut in half. Slips exactly as the original half-sheet.</small></span></label>
+          <label><input type="radio" name="layout" value="1">
+            <span>One slip per page<small>Half-sheet pages, one per student (the original way).</small></span></label>
+        </div>
+      </div>
       <button type="submit" id="go" disabled>Create PDF slips</button>
     </form>
     <div class="status" id="status"></div>
@@ -72,6 +88,14 @@
   })();
   submitTo.addEventListener('input', () => { try { localStorage.setItem('submitTo', submitTo.value); } catch {} });
 
+  // Remember the layout choice in this browser.
+  const layoutInputs = document.querySelectorAll('input[name="layout"]');
+  try {
+    const savedLayout = localStorage.getItem('layout');
+    layoutInputs.forEach(r => { if (r.value === savedLayout) r.checked = true; });
+  } catch {}
+  layoutInputs.forEach(r => r.addEventListener('change', () => { try { localStorage.setItem('layout', r.value); } catch {} }));
+
   function setFile(file) {
     if (!file) return;
     const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
@@ -95,6 +119,7 @@
       const fd = new FormData();
       fd.append('csv', input.files[0]);
       fd.append('submitTo', submitTo.value.trim());
+      fd.append('layout', (document.querySelector('input[name="layout"]:checked') || {}).value || '3');
       const res = await fetch('/generate', { method: 'POST', body: fd });
       if (!res.ok) {
         let msg = 'Upload failed.';
