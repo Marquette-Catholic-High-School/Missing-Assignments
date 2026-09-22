@@ -5,140 +5,161 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Missing Assignment Slips</title>
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --ink:#1c1e21; --muted:#5f6670; --line:#d8dbe0; --accent:#1f5fbf; --ok:#1c7c3f; --err:#b3261e; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--ink); }
-  main { max-width: 560px; margin: 48px auto; padding: 0 16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:28px; }
-  h1 { font-size: 22px; margin: 0 0 6px; }
-  p { margin: 0 0 16px; color: var(--muted); line-height: 1.45; }
-  .drop { display:block; border:2px dashed var(--line); border-radius:10px; padding:32px 16px; text-align:center; cursor:pointer; transition: border-color .15s, background .15s; }
-  .drop.over { border-color: var(--accent); background:#eef4fd; }
-  .drop strong { display:block; margin-bottom:4px; }
-  .drop input { display:none; }
-  .field { margin-top:18px; }
-  .field label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
-  .field input[type="text"] { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
-  .field small { display:block; margin-top:6px; font-size:12px; color:var(--muted); }
-  .choices { display:grid; gap:8px; }
-  .choices label { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:8px; cursor:pointer; font-size:14px; font-weight:400; }
-  .choices label:has(input:checked) { border-color: var(--accent); background:#eef4fd; }
-  .choices input { margin-top:3px; }
-  .choices span small { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
-  .file { margin-top:12px; font-size:14px; color:var(--ink); min-height:1.4em; }
-  button { margin-top:16px; width:100%; padding:12px; font-size:16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
-  button:disabled { background:#9db4d9; cursor:not-allowed; }
-  .status { margin-top:14px; font-size:14px; min-height:1.4em; }
-  .status.ok { color: var(--ok); } .status.err { color: var(--err); }
-  code { background:#eef0f3; padding:2px 5px; border-radius:4px; font-size:13px; }
-  .hint { font-size:13px; margin-top:18px; }
+  body { margin:0; background:#fff; color:#222; font: 15px/1.5 Georgia, "Times New Roman", serif; }
+  header { background:#1b2a41; color:#fff; padding:14px 24px; border-bottom:4px solid #c9a227; }
+  header .school { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#d9dee8; }
+  header h1 { margin:2px 0 0; font-size:22px; font-weight:normal; }
+  main { max-width:760px; padding:24px; }
+  p { margin:0 0 14px; }
+  form { border-top:1px solid #999; border-bottom:1px solid #999; margin:20px 0; }
+  .row { display:grid; grid-template-columns:200px 1fr; gap:12px 20px; padding:14px 0; border-bottom:1px solid #ddd; align-items:start; }
+  .row:last-child { border-bottom:0; }
+  .row > label:first-child, .row > .lbl { font-weight:bold; padding-top:2px; }
+  input[type="text"] { font:inherit; padding:5px 8px; border:1px solid #888; width:280px; max-width:100%; }
+  input[type="file"] { font:inherit; font-family: Arial, Helvetica, sans-serif; font-size:14px; }
+  .opts label { display:block; margin:0 0 6px; cursor:pointer; }
+  .opts input { margin-right:6px; }
+  .opts .note { color:#555; font-size:13px; margin-left:22px; display:block; }
+  .help { color:#555; font-size:13px; margin-top:4px; }
+  button { font:inherit; font-family: Arial, Helvetica, sans-serif; font-size:15px; padding:8px 18px; background:#e9e9e9; color:#111; border:1px solid #777; cursor:pointer; }
+  button:hover { background:#dcdcdc; }
+  button:disabled { color:#888; border-color:#bbb; background:#f2f2f2; cursor:default; }
+  #status { margin:14px 0 0; padding:0; font-family: Arial, Helvetica, sans-serif; font-size:14px; }
+  #status.err { color:#a40000; }
+  #status.ok { color:#1e5e20; }
+  h2 { font-size:17px; margin:28px 0 8px; }
+  ul { margin:0 0 14px 20px; padding:0; }
+  li { margin-bottom:4px; }
+  code { font-family: Menlo, Consolas, monospace; font-size:13px; }
+  pre { background:#f4f4f4; border:1px solid #ddd; padding:8px 10px; font-size:13px; overflow:auto; }
+  footer { max-width:760px; padding:0 24px 30px; color:#666; font-size:13px; }
+  @media (max-width:600px) { .row { grid-template-columns:1fr; gap:6px; } }
 </style>
 </head>
 <body>
+<header>
+  <div class="school">Marquette Catholic High School</div>
+  <h1>Missing Assignment Slips</h1>
+</header>
+
 <main>
-  <div class="card">
-    <h1>Missing Assignment Slips</h1>
-    <p>Upload a CSV with the columns <code>name</code>, <code>teacher</code>, and <code>assignment</code>. You'll get one printable PDF with one filled-in slip per row.</p>
+  <p>Upload a spreadsheet of missing assignments saved as a CSV file. A printable PDF of slips, one per student, will download to your computer.</p>
 
-    <form id="form">
-      <label class="drop" id="drop">
-        <strong>Drop your CSV here or click to choose</strong>
-        <span>.csv files only</span>
+  <form id="form">
+    <div class="row">
+      <label for="csv">CSV file</label>
+      <div>
         <input type="file" id="csv" name="csv" accept=".csv,text/csv">
-      </label>
-      <div class="file" id="fileName"></div>
-      <div class="field">
-        <label for="submitTo">Slips must be submitted to</label>
-        <input type="text" id="submitTo" name="submitTo" maxlength="60" autocomplete="off" placeholder="Mrs. Maag">
-        <small>This name is printed in the sentence at the bottom of every slip.</small>
+        <div class="help">Columns needed: <code>name</code>, <code>teacher</code>, <code>assignment</code>. <a href="/sample.csv">Download a sample file</a>.</div>
       </div>
-      <div class="field">
-        <label>Page layout</label>
-        <div class="choices" id="layout">
-          <label><input type="radio" name="layout" value="3" checked>
-            <span>Three slips per page<small>Letter paper, cut into thirds. Slips are full size with the blank top trimmed.</small></span></label>
-          <label><input type="radio" name="layout" value="2">
-            <span>Two slips per page<small>Letter paper, cut in half. Slips exactly as the original half-sheet.</small></span></label>
-          <label><input type="radio" name="layout" value="1">
-            <span>One slip per page<small>Half-sheet pages, one per student (the original way).</small></span></label>
-        </div>
-      </div>
-      <button type="submit" id="go" disabled>Create PDF slips</button>
-    </form>
-    <div class="status" id="status"></div>
+    </div>
 
-    <p class="hint">Need the format? <a href="/sample.csv">Download a sample CSV</a>. Extra columns are ignored, and rows with no name are skipped.</p>
-  </div>
+    <div class="row">
+      <label for="submitTo">Slips submitted to</label>
+      <div>
+        <input type="text" id="submitTo" name="submitTo" maxlength="60" autocomplete="off">
+        <div class="help">Printed in the sentence at the bottom of each slip.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="lbl">Page layout</div>
+      <div class="opts" id="layout">
+        <label><input type="radio" name="layout" value="3" checked>Three slips per page<span class="note">Letter paper, cut into thirds. Blank space above &ldquo;Name&rdquo; is trimmed.</span></label>
+        <label><input type="radio" name="layout" value="2">Two slips per page<span class="note">Letter paper, cut in half.</span></label>
+        <label><input type="radio" name="layout" value="1">One slip per page<span class="note">Half-sheet pages.</span></label>
+      </div>
+    </div>
+
+    <div class="row">
+      <div></div>
+      <div>
+        <button type="submit" id="go" disabled>Create PDF</button>
+        <div id="status"></div>
+      </div>
+    </div>
+  </form>
+
+  <h2>Preparing the CSV</h2>
+  <p>In Excel or Google Sheets, make a sheet with three columns and one row per missing assignment, then use <em>File &rarr; Save As</em> (Excel) or <em>File &rarr; Download &rarr; CSV</em> (Sheets).</p>
+<pre>name,teacher,assignment
+Jane Doe,Mr. Smith,Chapter 4 Vocabulary Worksheet
+John Public,Mrs. Johnson,Lab Report</pre>
+  <ul>
+    <li>Column headings can be in any order. &ldquo;Student Name&rdquo;, &ldquo;Name of Teacher&rdquo;, and &ldquo;Missing Assignment&rdquo; are also recognized.</li>
+    <li>Extra columns are ignored. Rows with no student name are skipped.</li>
+    <li>Long entries are shrunk to fit on the line.</li>
+  </ul>
+
+  <h2>Printing</h2>
+  <p>Print at 100% scale (not &ldquo;fit to page&rdquo;) so the slips come out the correct size. The dashed lines mark where to cut.</p>
 </main>
+
+<footer>Questions about this tool? Contact the school office.</footer>
+
 <script>
-  const drop = document.getElementById('drop');
-  const input = document.getElementById('csv');
-  const fileName = document.getElementById('fileName');
-  const go = document.getElementById('go');
-  const status = document.getElementById('status');
-  const form = document.getElementById('form');
-  const submitTo = document.getElementById('submitTo');
+  var input = document.getElementById('csv');
+  var go = document.getElementById('go');
+  var status = document.getElementById('status');
+  var form = document.getElementById('form');
+  var submitTo = document.getElementById('submitTo');
+  var layoutInputs = document.querySelectorAll('input[name="layout"]');
+
+  function setStatus(msg, cls) { status.textContent = msg; status.className = cls || ''; }
+
+  input.addEventListener('change', function () {
+    go.disabled = !input.files[0];
+    setStatus('', '');
+  });
 
   // Prefill the name: last value used in this browser, else the server default.
-  (async () => {
-    let saved = null;
-    try { saved = localStorage.getItem('submitTo'); } catch {}
+  (async function () {
+    var saved = null;
+    try { saved = localStorage.getItem('submitTo'); } catch (e) {}
     if (saved) { submitTo.value = saved; return; }
-    try { const cfg = await (await fetch('/config')).json(); submitTo.value = cfg.submitTo || ''; } catch {}
+    try { var cfg = await (await fetch('/config')).json(); submitTo.value = cfg.submitTo || ''; } catch (e) {}
   })();
-  submitTo.addEventListener('input', () => { try { localStorage.setItem('submitTo', submitTo.value); } catch {} });
+  submitTo.addEventListener('input', function () { try { localStorage.setItem('submitTo', submitTo.value); } catch (e) {} });
 
   // Remember the layout choice in this browser.
-  const layoutInputs = document.querySelectorAll('input[name="layout"]');
   try {
-    const savedLayout = localStorage.getItem('layout');
-    layoutInputs.forEach(r => { if (r.value === savedLayout) r.checked = true; });
-  } catch {}
-  layoutInputs.forEach(r => r.addEventListener('change', () => { try { localStorage.setItem('layout', r.value); } catch {} }));
+    var savedLayout = localStorage.getItem('layout');
+    layoutInputs.forEach(function (r) { if (r.value === savedLayout) r.checked = true; });
+  } catch (e) {}
+  layoutInputs.forEach(function (r) {
+    r.addEventListener('change', function () { try { localStorage.setItem('layout', r.value); } catch (e) {} });
+  });
 
-  function setFile(file) {
-    if (!file) return;
-    const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
-    fileName.textContent = file.name;
-    go.disabled = false;
-    setStatus('', '');
-  }
-  function setStatus(msg, cls) { status.textContent = msg; status.className = 'status ' + cls; }
-
-  input.addEventListener('change', () => setFile(input.files[0]));
-  ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-  ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-  drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
-
-  form.addEventListener('submit', async (e) => {
+  form.addEventListener('submit', async function (e) {
     e.preventDefault();
     if (!input.files[0]) return;
     go.disabled = true;
-    setStatus('Building your PDF…', '');
+    setStatus('Building PDF...', '');
     try {
-      const fd = new FormData();
+      var fd = new FormData();
       fd.append('csv', input.files[0]);
       fd.append('submitTo', submitTo.value.trim());
-      fd.append('layout', (document.querySelector('input[name="layout"]:checked') || {}).value || '3');
-      const res = await fetch('/generate', { method: 'POST', body: fd });
+      var checked = document.querySelector('input[name="layout"]:checked');
+      fd.append('layout', checked ? checked.value : '3');
+      var res = await fetch('/generate', { method: 'POST', body: fd });
       if (!res.ok) {
-        let msg = 'Upload failed.';
-        try { msg = (await res.json()).error || msg; } catch {}
+        var msg = 'Upload failed.';
+        try { msg = (await res.json()).error || msg; } catch (e2) {}
         throw new Error(msg);
       }
-      const blob = await res.blob();
-      const count = res.headers.get('X-Slip-Count') || '?';
-      const skipped = (res.headers.get('X-Skipped-Rows') || '').split(',').filter(Boolean);
-      const cd = res.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="([^"]+)"/);
-      const a = document.createElement('a');
+      var blob = await res.blob();
+      var count = res.headers.get('X-Slip-Count') || '?';
+      var skipped = (res.headers.get('X-Skipped-Rows') || '').split(',').filter(Boolean);
+      var cd = res.headers.get('Content-Disposition') || '';
+      var m = cd.match(/filename="([^"]+)"/);
+      var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = m ? m[1] : 'missing-assignment-slips.pdf';
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-      let msg = `Done: ${count} slip${count === '1' ? '' : 's'} created.`;
-      if (skipped.length) msg += ` Skipped row${skipped.length === 1 ? '' : 's'} with no name: ${skipped.join(', ')}.`;
-      setStatus(msg, 'ok');
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+      var text = count + ' slip' + (count === '1' ? '' : 's') + ' created. The PDF has been downloaded.';
+      if (skipped.length) text += ' Skipped row' + (skipped.length === 1 ? '' : 's') + ' with no name: ' + skipped.join(', ') + '.';
+      setStatus(text, 'ok');
     } catch (err) {
       setStatus(err.message, 'err');
     } finally {
